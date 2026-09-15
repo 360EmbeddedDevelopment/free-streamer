@@ -1,0 +1,31 @@
+[Unit]
+# A *user* service: it needs the desktop session to exist, because mpv plays as
+# a client of the X server that owns the TV. Install to
+# ~/.config/systemd/user/stream.service - see README.
+Description=HDMI stream player
+Documentation=file:/home/owenw/football-stream/README.md
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+
+# Edit this line: put the URL you want the Pi to play.
+ExecStart=/usr/bin/python3 /home/owenw/football-stream/stream.py \
+    --retries -1 \
+    --log-file %h/.local/state/stream/stream.log \
+    STREAM_URL_HERE
+
+WorkingDirectory=/home/owenw/football-stream
+
+# stream.py detects DISPLAY/XAUTHORITY itself, but setting them here makes the
+# unit work even if the detection is ever wrong.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
