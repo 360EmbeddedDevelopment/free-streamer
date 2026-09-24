@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en" data-status="{{ status.state }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <title>Streamer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="top">
+  <div class="topline">
+    <h1>Streamer</h1>
+    <div class="topicons">
+      <button class="icon" id="logToggle" type="button" title="Log" aria-label="Log" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" focusable="false">
+          <rect x="3" y="5" width="18" height="2" fill="currentColor"/>
+          <rect x="3" y="11" width="13" height="2" fill="currentColor"/>
+          <rect x="3" y="17" width="16" height="2" fill="currentColor"/>
+        </svg>
+      </button>
+      <a class="icon" href="{{ url_for('web.settings') }}" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" d="M23.03 10.06L23.03 13.94L20.31 14.23L19.45 16.30L21.17 18.42L18.42 21.17L16.30 19.45L14.23 20.31L13.94 23.03L10.06 23.03L9.77 20.31L7.70 19.45L5.58 21.17L2.83 18.42L4.55 16.30L3.69 14.23L0.97 13.94L0.97 10.06L3.69 9.77L4.55 7.70L2.83 5.58L5.58 2.83L7.70 4.55L9.77 3.69L10.06 0.97L13.94 0.97L14.23 3.69L16.30 4.55L18.42 2.83L21.17 5.58L19.45 7.70L20.31 9.77ZM8.00 12.00a4.00 4.00 0 1 0 8.00 0a4.00 4.00 0 1 0 -8.00 0Z"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main>
+  {% if catalog.error %}
+    <div class="banner error">
+      <strong>streams.json could not be read</strong>
+      <span>{{ catalog.error }}</span>
+    </div>
+  {% endif %}
+
+  {# all_warnings, not warnings: link problems are kept out of the settings
+     page's list and this is the only page that shows them. #}
+  {% if catalog.all_warnings %}
+    <details class="banner warn">
+      <summary>{{ catalog.all_warnings|length }} warning{{ '' if catalog.all_warnings|length == 1 else 's' }} in streams.json</summary>
+      <ul>{% for w in catalog.all_warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+    </details>
+  {% endif %}
+
+  {% if not catalog.streams and not catalog.error %}
+    <div class="banner empty">
+      <strong>No streams yet</strong>
+      <span>Add one to <code>{{ catalog.path }}</code> and reload this page.</span>
+    </div>
+  {% endif %}
+
+  {% for group, streams in groups %}
+    {% if group %}<h2 class="group">{{ group }}</h2>{% endif %}
+    <div class="grid">
+      {% for s in streams %}
+        <button class="stream{{ ' live' if status.stream_id == s.id }}"
+                data-id="{{ s.id }}"
+                {% if s.urls|length > 1 %}data-links="{{ s.urls|length }}"{% endif %}
+                {% if not s.supported %}data-unhandled="1"{% endif %}>
+          <span class="label">{{ s.label }}</span>
+          {% if s.note %}<span class="note">{{ s.note }}</span>{% endif %}
+          <span class="meta">
+            {% if s.urls|length > 1 %}
+              {# Which link the next tap plays. Kept in step by app.js. #}
+              <span class="badge cycle" data-cycle
+                    title="{{ s.urls|length }} links - tap again for the next one">{{
+                (status.cycle_index + 1) if status.cycle_id == s.id else 1
+              }}/{{ s.urls|length }}</span>
+            {% endif %}
+            {% if not s.supported %}
+              <span class="badge bad" title="No site class claims any of these links">unsupported</span>
+            {% elif s.unsupported_links %}
+              <span class="badge bad"
+                    title="No site class claims {{ s.unsupported_links }} of these links">{{
+                s.unsupported_links }} unsupported</span>
+            {% endif %}
+            {% if not s.resolved(defaults)['autoplay'] %}<span class="badge">manual start</span>{% endif %}
+          </span>
+        </button>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
+  {# Ways out to the sites themselves. These open on whatever is looking at this
+     page, not on the TV: browse a site's listings on your phone, then bring a
+     link back to the box below. Nothing here plays anything. #}
+  {% if catalog.links %}
+    <h2 class="group">Quick links</h2>
+    <nav class="quicklinks">
+      {% for link in catalog.links %}
+        <a class="quicklink" href="{{ link.url }}"
+           target="_blank" rel="noopener noreferrer"
+           {% if link.note %}title="{{ link.note }}"{% endif %}>{{ link.label }}</a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+
+  <!-- A link to watch once. It never becomes a button - buttons are configured
+       on the settings page - so nothing here is written to streams.json. -->
+  <h2 class="group">Direct link</h2>
+  <form class="direct" id="directForm">
+    <div class="directfield{{ ' live' if status.stream_id == '__direct__' }}" id="directField">
+      <input id="directUrl" name="url" type="text" inputmode="url"
+             autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="Paste a link to play once"
+             value="{{ status.url if status.stream_id == '__direct__' else '' }}">
+    </div>
+    <button class="stop" type="submit" id="directPlay">Play</button>
+  </form>
+  <p class="flash bad directerror" id="directError" hidden></p>
+
+</main>
+
+<!-- The log is docked with the status it explains: a drawer that opens upward
+     out of the same strip, rather than a toggle adrift at the end of the page. -->
+<div class="dock">
+  <details class="logbox" id="logbox">
+    <summary>Log</summary>
+    <pre id="log">{{ status.log|join('\n') }}</pre>
+  </details>
+  <footer class="bar">
+    <span class="dot" id="dot"></span>
+    <span class="status" id="statusText">{{ status.message or 'nothing playing' }}</span>
+    <button class="stop" id="stop">Stop</button>
+  </footer>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

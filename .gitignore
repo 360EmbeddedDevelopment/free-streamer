@@ -1,2 +1,18 @@
 __pycache__/
 *.py[cod]
+
+# Holds the Advanced tab's password in plain text - keep it off git.
+# config.example.json is the one to commit.
+config.json
+# Session signing key, generated on first run.
+.webapp-secret
+# The buttons: real stream links, which stay on the Pi and out of the repo.
+# streams.example.json is the one to commit.
+streams.json
+# Written by the settings page before each save.
+streams.json.bak
+
+# The direct-link bar parks unsupported domains here for review.
+unknown-domains.txt
+.claude
+todo.txt

@@ -1,28 +1,50 @@
 #!/usr/bin/env python3
-"""Play a stream full-screen on the HDMI-attached TV.
+"""Play a stream page full-screen on the HDMI-attached TV.
+
+Every stream is opened in a kiosk Firefox driven from here: the page is loaded,
+the video found, clicked and put fullscreen, and the whole thing restarted if it
+dies. Which site the URL belongs to decides how that is done - see
+streamplayer/sites/.
 
 Examples:
 
-    # A direct HLS feed, auto-detecting the HDMI port and audio device
-    ./stream.py 'https://example.com/live/stream.m3u8'
+    # A match page on a supported site (see --list-sites)
+    ./stream.py 'https://example.com/some-match'
 
-    # A page yt-dlp can resolve, capped at 1080p, printing the command only
-    ./stream.py --dry-run 'https://www.youtube.com/watch?v=...'
+    # Show what would run, without launching anything
+    ./stream.py --dry-run 'https://example.com/some-match'
 
-    # A service that needs a login, via the kiosk browser
-    ./stream.py --player chromium 'https://www.nfl.com/plus/'
+    # Which sites are supported, and which HDMI port has the TV
+    ./stream.py --list-sites
+    ./stream.py --list-displays
 
-Point it at sources you are authorized to watch: your own cameras, an IPTV
-subscription, YouTube, or a streaming service you have an account with.
+Point it at streams you are authorized to watch.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 
-from streamplayer import __version__, display, players, resolver, supervisor
+from streamplayer import __version__, display, firefox, sites, supervisor
+
+# This Pi's own answers about its screen, written by install.sh (the "display"
+# section of the same config.json the control panel uses). Nothing about any
+# one Pi or TV lives in the code: a clone on another Pi asks its installer.
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def saved_display() -> dict:
+    """{"connector": ..., "mode": ...} from config.json, or {} if unset."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            section = json.load(fh).get("display")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return section if isinstance(section, dict) else {}
 
 log = logging.getLogger("stream")
 
@@ -30,52 +52,36 @@ log = logging.getLogger("stream")
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stream.py",
-        description="Play a stream full-screen on a Raspberry Pi HDMI output.",
+        description="Play a stream page full-screen on a Raspberry Pi HDMI output.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Run --list-displays to see which HDMI port has a TV attached.",
+        epilog="Run --list-sites for supported sites, --list-displays for the TV.",
     )
-    p.add_argument("url", nargs="?", help="stream URL, or a page yt-dlp can resolve")
+    p.add_argument("url", nargs="?", help="stream page URL on a supported site (see --list-sites)")
     p.add_argument(
-        "--player",
-        choices=("mpv", "chromium"),
-        default="mpv",
-        help="mpv renders straight to HDMI (default); chromium is for login-gated services",
+        "--site",
+        help="force a site handler instead of matching on the URL's domain "
+        "(see --list-sites)",
     )
     p.add_argument(
         "--connector",
-        help="DRM connector to use, e.g. HDMI-A-2 (default: the connected one)",
+        help="HDMI connector to use, e.g. HDMI-A-1 (default: the one install.sh "
+        "saved, else whichever has a display on it)",
+    )
+    p.add_argument(
+        "--mode",
+        help="switch the screen to WIDTHxHEIGHT before playing, or 'native' to "
+        "leave it alone (default: what install.sh saved)",
     )
     p.add_argument(
         "--backend",
-        choices=("auto", "x11", "wayland", "drm"),
+        choices=("auto", "x11", "wayland"),
         default="auto",
-        help="display stack to render through (default: auto-detect; drm needs a bare console)",
+        help="display stack to reach the screen through (default: auto-detect)",
     )
     p.add_argument(
-        "--audio-device",
-        help="mpv audio device (default: the HDMI port's ALSA card)",
-    )
-    p.add_argument(
-        "--hwdec",
-        help="mpv hwdec mode (default: drm when the Pi's HEVC decoder exists, else no)",
-    )
-    p.add_argument(
-        "--max-height",
-        type=int,
-        default=1080,
-        help="cap vertical resolution (default: 1080; the Pi 5 decodes H.264 in software)",
-    )
-    p.add_argument(
-        "--full-res",
-        action="store_const",
-        const=None,
-        dest="max_height",
-        help="no resolution cap - use for HEVC 4K sources",
-    )
-    p.add_argument("--volume", type=int, default=70, help="mpv start volume (default: 70)")
-    p.add_argument(
-        "--drm-mode",
-        help="force a video mode, e.g. 3840x2160 (--backend drm only; default: mpv picks)",
+        "--profile",
+        default=firefox.FIREFOX_PROFILE,
+        help=f"kiosk Firefox profile (default: {firefox.FIREFOX_PROFILE})",
     )
     p.add_argument(
         "--retries",
@@ -84,45 +90,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="restarts after a drop: -1 forever (default), 0 none, N at most N",
     )
     p.add_argument(
-        "--low-latency",
-        action="store_true",
-        help="cut buffering for lower delay; more stutter on a flaky feed",
+        "--no-autoplay",
+        action="store_false",
+        dest="autoplay",
+        help="leave the video for you to start and fullscreen by hand",
     )
     p.add_argument(
-        "--interactive",
-        action="store_true",
-        help="keep mpv's keyboard bindings (q to quit, space to pause)",
-    )
-    p.add_argument("--user-agent", help="override the HTTP User-Agent")
-    p.add_argument("--referer", help="send an HTTP Referer header")
-    p.add_argument(
-        "--mpv-arg",
+        "--firefox-arg",
         action="append",
         default=[],
         metavar="ARG",
-        help="pass an extra argument to mpv (repeatable)",
+        help="pass an extra argument to firefox (repeatable)",
     )
     p.add_argument("--log-file", help="also append logs to this file")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="resolve the URL and print the player command without playing",
+        help="print the browser command without launching it",
+    )
+    p.add_argument(
+        "--list-sites",
+        action="store_true",
+        help="show the streaming sites this player knows how to drive",
     )
     p.add_argument(
         "--list-displays",
         action="store_true",
-        help="show HDMI connectors, their status, and the detected audio device",
+        help="show HDMI connectors, their status, and the display backend",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
 
 
 BACKEND_NOTES = {
-    "x11": "an X session owns the display; mpv plays as a fullscreen client",
-    "wayland": "a Wayland compositor owns the display; mpv plays as a client",
-    "drm": "no session detected; mpv renders straight to KMS (needs the console)",
+    "x11": "an X session owns the display; Firefox draws as a client of it",
+    "wayland": "a Wayland compositor owns the display; Firefox draws as a client",
+    "drm": "no session detected - Firefox cannot draw to a bare console",
 }
+
+
+def list_sites() -> int:
+    print("Supported sites:")
+    print(sites.describe())
+    return 0
 
 
 def list_displays() -> int:
@@ -136,7 +147,6 @@ def list_displays() -> int:
     backend = display.detect_backend()
     print(f"\nActive: {conn.name}")
     print(f"Best mode: {display.best_mode(conn) or 'unknown'}")
-    print(f"Audio device: {display.hdmi_audio_device(conn)}")
     print(f"Display backend: {backend} - {BACKEND_NOTES[backend]}")
     print(f"Output name here: {display.output_name(conn, backend)}")
     env = display.session_env(backend)
@@ -149,71 +159,74 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     supervisor.setup_logging(verbose=args.verbose, log_file=args.log_file)
 
+    if args.list_sites:
+        return list_sites()
     if args.list_displays:
         return list_displays()
 
     if not args.url:
         build_parser().print_usage(sys.stderr)
-        print("stream.py: error: a URL is required (or use --list-displays)", file=sys.stderr)
+        print("stream.py: error: a URL is required (or use --list-sites)", file=sys.stderr)
         return 2
 
+    saved = saved_display()
     try:
-        conn = display.get_connector(args.connector)
+        conn = display.get_connector(args.connector or saved.get("connector") or None)
     except display.NoDisplayError as exc:
         log.error("%s", exc)
         return 1
 
     backend = display.detect_backend() if args.backend == "auto" else args.backend
+    mode = args.mode if args.mode is not None else (saved.get("mode") or "")
+    if mode == "native":
+        mode = ""
 
-    cfg = players.PlayerConfig(
+    cfg = firefox.Config(
         connector=conn,
         backend=backend,
-        hwdec=args.hwdec,
-        audio_device=args.audio_device,
-        volume=args.volume,
-        max_height=args.max_height,
-        low_latency=args.low_latency,
-        interactive=args.interactive,
-        drm_mode=args.drm_mode,
-        user_agent=args.user_agent,
-        referer=args.referer,
-        extra_args=args.mpv_arg,
+        profile=args.profile,
+        autoplay=args.autoplay,
+        extra_args=args.firefox_arg,
     )
 
-    log.info(
-        "output %s via %s, audio %s",
-        cfg.output_name(),
-        backend,
-        cfg.resolved_audio_device(),
-    )
+    try:
+        site = (
+            sites.by_name(args.site, args.url, cfg)
+            if args.site
+            else sites.for_url(args.url, cfg)
+        )
+    except sites.UnknownSite as exc:
+        log.error("%s", exc)
+        return 1
 
-    def build_launch() -> players.Launch:
-        """Called before each launch, so expiring stream tokens get refreshed."""
-        if args.player == "chromium":
-            return players.chromium_command(args.url, cfg)
-        media = resolver.resolve(args.url, max_height=args.max_height)
-        if not media.direct:
-            log.info("resolved via yt-dlp%s", " (separate audio)" if media.audio else "")
-        return players.mpv_command(media, cfg)
+    log.info("%s on %s via %s", site, cfg.output_name(), backend)
+
+    # Before the browser, never under it: changing mode beneath a playing video
+    # leaves the compositor presenting frames badly. Once per run is enough -
+    # the supervisor's restarts reuse the same screen.
+    if mode and args.dry_run:
+        log.info("would switch %s to %s first", cfg.output_name(), mode)
+    elif mode:
+        log.info("%s", display.set_mode(conn, backend, mode))
 
     if args.dry_run:
         try:
-            launch = build_launch()
-        except (resolver.UnsupportedSource, players.PlayerUnavailable) as exc:
+            launch = site.launch()
+        except firefox.FirefoxUnavailable as exc:
             log.error("%s", exc)
             return 1
-        print(players.describe_command(launch))
+        print(firefox.describe_command(launch))
         return 0
 
-    sup = supervisor.Supervisor(build_launch, retries=args.retries)
+    # site.launch() is called before every attempt, not once: a page URL can
+    # carry a token that has expired by the time we reconnect.
+    sup = supervisor.Supervisor(site.launch, retries=args.retries)
     sup.install_signal_handlers()
     try:
         return sup.run()
-    except players.PlayerUnavailable as exc:
+    except firefox.FirefoxUnavailable as exc:
         log.error("%s", exc)
         return 1
-    finally:
-        supervisor.restore_console()
 
 
 if __name__ == "__main__":

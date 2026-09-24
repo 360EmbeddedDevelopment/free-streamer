@@ -1,0 +1,561 @@
+/* Phone-first: this is opened one-handed from the sofa, so the tap targets stay
+   large and the status bar stays put.
+
+   IBM Carbon, Gray 100 (dark). True-neutral greys, flat surfaces, square corners,
+   an 8px spatial grid. Separation comes from layered fills rather than outlines:
+   canvas #161616 < tile #262626 < hover #333333 < accent #393939. The live bar
+   is the single deliberate exception - it glows.
+   Blue 60 is for fills and indicators; blue TEXT uses Blue 40, which is the only
+   one of the two readable at small sizes on a dark layer. */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;        /* variable: 300, 400 and 600 all come from this one file */
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("fonts/IBMPlexSans-latin.woff2") format("woff2");
+}
+
+:root {
+  /* ---- Carbon Gray 100 ---- */
+  --canvas:       #111111;   /* body, header, dock, log drawer */
+  --layer:        #262626;   /* tiles, list rows, inputs */
+  --layer-hover:  #333333;
+  --layer-accent: #393939;   /* badges, secondary button, every 1px border */
+  --layer-accent-hover: #4c4c4c;
+  --border:       #393939;
+  --field-border: #6f6f6f;   /* Carbon border-strong: an input needs a visible edge */
+
+  --text-primary:   #f4f4f4;
+  --text-secondary: #c6c6c6;
+  --text-muted:     #8d8d8d;
+
+  /* ---- the accent: change this one value ---- */
+  --accent:       #0f62fe;   /* Carbon Blue 60 - fills and the live bar */
+  --accent-hover: #0353e9;
+  --accent-text:  #78a9ff;   /* Carbon Blue 40 - blue used AS TEXT */
+
+  /* Bloom on the live bar. Derived from --accent so the one knob still holds;
+     the plain value above each is the fallback where color-mix is missing. */
+  --accent-bloom: rgba(15, 98, 254, 0.75);
+  --accent-bloom: color-mix(in srgb, var(--accent) 75%, transparent);
+  --accent-haze:  rgba(15, 98, 254, 0.35);
+  --accent-haze:  color-mix(in srgb, var(--accent) 35%, transparent);
+  /* The LIVE token is Blue 40, so its bloom comes off Blue 40 too - a Blue 60
+     halo under lighter text reads as a dark smudge. */
+  --accent-text-glow: rgba(120, 169, 255, 0.60);
+  --accent-text-glow: color-mix(in srgb, var(--accent-text) 60%, transparent);
+
+  --success: #42be65;
+  --warning: #f1c21b;
+  --error:   #fa4d56;
+  --error-text: #ff8389;   /* Carbon Red 40 - red used AS TEXT on a light layer */
+  --error-hover: #ba1b23;
+  --off:     #6f6f6f;
+
+  --focus:   #ffffff;        /* Carbon's dark-theme focus ring */
+
+  /* ---- 8px spatial grid ---- */
+  --s1: 8px;
+  --s2: 16px;
+  --s3: 24px;
+  --s4: 32px;
+
+  /* Carbon productive motion */
+  --ease: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --fast: 110ms;
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font: 400 14px/1.43 "IBM Plex Sans", -apple-system, BlinkMacSystemFont,
+        "Segoe UI", Roboto, sans-serif;
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));  /* clears the dock */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* One focus treatment for everything, which the old build had nowhere. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* ---------- shell ---------- */
+
+.top {
+  padding: var(--s2);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--border);
+}
+.top h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+main { padding: var(--s2); max-width: 900px; margin: 0 auto; }
+
+.topline { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
+.topicons { display: flex; align-items: center; margin: -8px -8px -8px 0; }
+
+/* The 360 mark, left of the title. It is decorative - the h1 already names the
+   page - so it lives here rather than in the markup.
+
+   The artwork is black-on-transparent, so it is used as a MASK rather than an
+   image: the box is painted in currentColor and the artwork punches it out.
+   That way it matches the title exactly and follows any colour change. */
+body:not(.settings) .top h1 {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+body:not(.settings) .top h1::before {
+  content: "";
+  flex: none;
+  width: 48px;
+  height: 24px;
+  background: currentColor;
+  -webkit-mask: url("360.svg") left center / contain no-repeat;
+          mask: url("360.svg") left center / contain no-repeat;
+}
+
+.icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px; height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+.icon:hover { background: var(--layer-hover); }
+.icon[aria-expanded="true"] { background: var(--layer-accent); }
+.icon svg { display: block; }
+
+.link {
+  color: var(--accent-text);
+  text-decoration: none;
+  font-size: 14px;
+}
+.link:hover { text-decoration: underline; }
+
+/* ---------- category headers ---------- */
+
+.group {
+  margin: var(--s3) 0 var(--s2);
+  padding-bottom: var(--s1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.group:first-child { margin-top: 0; }
+
+/* ---------- stream tiles ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--s2);
+}
+
+.stream {
+  position: relative;
+  /* Its own stacking context, so the live markers' z-index only has to beat
+     this tile's background - not everything else on the page. */
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-height: 104px;
+  padding: var(--s2);
+  text-align: left;
+  background: var(--layer);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+.stream:hover { background: var(--layer-hover); }
+/* Hover lifts the layer, so the muted note lifts with it - #8D8D8D against
+   #333333 is 3.81:1, under AA, where #C6C6C6 is 7.40:1. */
+.stream:hover .note { color: var(--text-secondary); }
+.stream[disabled] { opacity: 0.5; cursor: progress; }
+
+/* Playing: the surface does not change - a 3px bar on the left edge carries the
+   state, with a text token in the corner. Absolutely positioned rather than a
+   thick border-left, so the title does not shift sideways when it appears. */
+/* Shared with the direct-link field, so "what is playing" looks identical
+   whether it came from a button or a pasted link. */
+.stream.live::before,
+.directfield.live::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  z-index: 1;               /* over the field's own opaque background */
+  background: var(--accent);
+  /* The one place this build departs from Carbon's flatness: the live bar
+     blooms, so the playing tile is findable across a room at a glance. */
+  box-shadow: 0 0 6px var(--accent-bloom), 0 0 18px var(--accent-haze);
+}
+.stream.live::after,
+.directfield.live::after {
+  content: "LIVE";
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--accent-text);
+  text-shadow: 0 0 6px var(--accent-text-glow), 0 0 16px var(--accent-text-glow);
+}
+.stream.live .label { padding-right: 40px; }
+
+.label {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+.note {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-muted);
+}
+.meta { margin-top: auto; display: flex; flex-wrap: wrap; gap: var(--s1); }
+
+.badge {
+  padding: 4px var(--s1);
+  border: 0;
+  border-radius: 0;
+  background: var(--layer-accent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+/* Red 50 on the badge fill is 3.44:1 - under AA - so small red text steps up to
+   Red 40, the same Blue 60 -> Blue 40 move Carbon makes for blue on dark. */
+.badge.bad { color: var(--error-text); }
+/* "2/3" changes under the thumb, so fix the digit width and the badge stops
+   twitching as the number does. */
+.badge.cycle { font-variant-numeric: tabular-nums; }
+
+/* ---------- quick links ---------- */
+
+/* Ways out to the sites, not buttons that play. They wrap rather than scroll,
+   because on a phone this row is the widest thing on the page. */
+.quicklinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+.quicklink {
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  background: var(--layer);
+  color: var(--accent-text);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background var(--fast) var(--ease);
+}
+.quicklink:hover { background: var(--layer-hover); text-decoration: underline; }
+
+/* ---------- inline notifications ---------- */
+
+.banner, .flash {
+  margin: 0 0 var(--s2);
+  padding: var(--s2);
+  border: 0;
+  border-left: 3px solid var(--border);
+  border-radius: 0;
+  background: var(--layer);
+  font-size: 14px;
+}
+.banner strong { display: block; margin-bottom: 4px; font-weight: 600; }
+.banner span, .banner li { color: var(--text-secondary); font-size: 14px; }
+.banner ul { margin: var(--s1) 0 0; padding-left: var(--s3); }
+.banner.error { border-left-color: var(--error); }
+.banner.error strong { color: var(--error); }
+.banner.warn { border-left-color: var(--warning); }
+.banner.warn summary { cursor: pointer; color: var(--text-primary); }
+.flash.ok  { border-left-color: var(--success); }
+.flash.bad { border-left-color: var(--error); color: var(--text-primary); }
+
+code {
+  padding: 0 4px;
+  border-radius: 0;
+  background: var(--layer-accent);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ---------- direct link ---------- */
+
+.direct { display: flex; align-items: stretch; gap: var(--s1); }
+.directfield { position: relative; isolation: isolate; flex: 1; min-width: 0; display: flex; }
+.directfield input { flex: 1; width: 100%; }
+/* Keep typed text from sliding under the LIVE token. */
+.directfield.live input { padding-right: 56px; }
+.directerror { margin: var(--s2) 0 0; }
+
+/* ---------- the dock ---------- */
+
+/* The status line and Stop sit flush on the bottom edge; the log opens upward
+   out of the same strip, driven by the icon in the header. */
+.dock {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  /* Above everything the page scrolls beneath it. Without a z-index a fixed
+     element sits on the page's base layer, and anything given one - the live
+     markers below, say - paints straight through the bar. */
+  z-index: 10;
+  background: var(--canvas);
+  border-top: 1px solid var(--border);
+}
+
+.logbox summary { display: none; }
+#log {
+  margin: 0;
+  padding: var(--s2);
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--canvas);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font: 400 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) calc(var(--s2) + env(safe-area-inset-right))
+           calc(var(--s2) + env(safe-area-inset-bottom))
+           calc(var(--s2) + env(safe-area-inset-left));
+}
+
+.dot {
+  flex: none;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--off);
+  transition: background var(--fast) var(--ease);
+}
+[data-status="playing"] .dot { background: var(--success); }
+[data-status="starting"] .dot,
+[data-status="stopping"] .dot { background: var(--warning); animation: pulse 1s infinite; }
+[data-status="failed"] .dot { background: var(--error); }
+
+@keyframes pulse { 50% { opacity: 0.3; } }
+
+.status {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-status="failed"] .status { color: var(--error); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ---------- buttons ---------- */
+
+/* Carbon field size: 40px tall, square corners, no rounding anywhere. */
+.stop, .primary, .ghost, .danger {
+  flex: none;
+  height: 40px;
+  padding: 0 var(--s2);
+  border: 1px solid transparent;
+  border-radius: 0;
+  font: 400 14px/1 inherit;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+
+/* Secondary */
+.stop {
+  background: var(--layer-accent);
+  color: var(--text-primary);
+}
+.stop:hover { background: var(--layer-accent-hover); }
+
+/* Primary */
+.primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+.primary:hover { background: var(--accent-hover); }
+
+/* Tertiary */
+.ghost {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.ghost:hover { background: var(--accent); color: #ffffff; border-color: var(--accent); }
+
+/* Danger tertiary */
+.danger {
+  background: transparent;
+  border-color: var(--error);
+  color: var(--error);
+}
+.danger:hover { background: var(--error-hover); color: #ffffff; border-color: var(--error-hover); }
+
+.small { height: 32px; padding: 0 12px; font-size: 12px; }
+button[disabled] { opacity: 0.4; cursor: default; }
+.stop[disabled]:hover { background: var(--layer-accent); }
+.primary[disabled]:hover { background: var(--accent); }
+.ghost[disabled]:hover { background: transparent; color: var(--accent-text); }
+.danger[disabled]:hover { background: transparent; color: var(--error); border-color: var(--error); }
+
+/* ---------- settings page ---------- */
+
+body.settings { padding-bottom: var(--s4); }
+
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-top: var(--s2);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  height: 40px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 400 14px/1 inherit;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.tab:hover { background: var(--layer-hover); color: var(--text-primary); }
+.tab.on { color: var(--text-primary); border-bottom-color: var(--accent); }
+
+h2 { font-size: 14px; font-weight: 600; margin: var(--s3) 0 var(--s1); }
+.danger-title { color: var(--error); }
+
+.form { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s2) 0 var(--s1); }
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+/* Carbon text input: filled layer, one border along the bottom only.
+   The direct-link field on the main page takes the same treatment. */
+.form input, .form select, .form textarea, .direct input {
+  height: 40px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-bottom: 1px solid var(--field-border);
+  border-radius: 0;
+  background: var(--layer);
+  color: var(--text-primary);
+  font: 400 14px/1.43 inherit;
+  min-width: 0;
+  transition: background var(--fast) var(--ease);
+}
+/* One link per line, so it grows with the rows rather than the 40px above. */
+.form textarea {
+  height: auto;
+  padding: var(--s1) var(--s2);
+  resize: vertical;
+}
+.form input::placeholder, .form textarea::placeholder,
+.direct input::placeholder { color: var(--text-muted); }
+.form input:focus, .form select:focus, .form textarea:focus, .direct input:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-bottom-color: transparent;
+}
+
+.subgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s2); }
+.subgrid .wide { grid-column: 1 / -1; }
+.sub summary, .addsummary {
+  cursor: pointer;
+  padding: var(--s1) 0;
+  color: var(--accent-text);
+  font-size: 14px;
+}
+.editor {
+  padding: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--layer);
+}
+.row { display: flex; gap: var(--s1); align-items: center; }
+.row.spread { justify-content: space-between; }
+
+.list { list-style: none; margin: var(--s2) 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.item {
+  display: flex;
+  gap: var(--s2);
+  align-items: flex-start;
+  padding: var(--s2);
+  background: var(--layer);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.item form { flex: 1; }
+.itemmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.itemlabel { font-size: 14px; font-weight: 400; color: var(--text-primary); }
+.itemurl { font-size: 12px; font-weight: 300; color: var(--text-muted); word-break: break-all; }
+.itembuttons { display: flex; flex-wrap: wrap; gap: var(--s1); justify-content: flex-end; }
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--s1); margin: var(--s2) 0; }
+.output, .sample {
+  margin: var(--s2) 0 0;
+  padding: var(--s2);
+  max-height: 50vh;
+  overflow: auto;
+  background: var(--layer);
+  border: 0;
+  border-left: 3px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font: 400 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.hint { font-size: 12px; font-weight: 300; color: var(--text-muted); }
+.login { max-width: 340px; }
+
+@media (max-width: 560px) {
+  .item { flex-direction: column; }
+  .itembuttons { justify-content: flex-start; }
+}

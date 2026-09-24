@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy to config.json and edit - install.sh does this and asks the questions for you. config.json is gitignored: the password below is stored as you type it, and the display section describes this Pi's own screen.",
+  "auth": {
+    "username": "admin",
+    "password": "choose-something"
+  },
+  "defaults": {
+    "autoplay": true,
+    "retries": -1,
+    "backend": "auto",
+    "profile": "",
+    "firefox_args": []
+  },
+  "display": {
+    "connector": "",
+    "mode": ""
+  },
+  "_display": "\"connector\": the HDMI port the TV is on, e.g. HDMI-A-1, or \"\" for whichever has a display. \"mode\": a resolution to switch the screen to before each stream, e.g. 1920x1080, or \"\" to leave it alone. Re-answer with ./install.sh --reconfigure-display."
+}

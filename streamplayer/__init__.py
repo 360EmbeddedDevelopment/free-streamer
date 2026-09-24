@@ -1,3 +1,3 @@
-"""Play a stream full-screen on a Raspberry Pi's HDMI output."""
+"""Play a stream page full-screen on a Raspberry Pi's HDMI output, in Firefox."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

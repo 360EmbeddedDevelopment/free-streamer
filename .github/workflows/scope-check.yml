@@ -1,0 +1,89 @@
+# Fails a pull request that changes anything outside what contributors are
+# allowed to touch: the stream list, and one new file per streaming site.
+#
+# This is the enforcement, because the repo is private on a free plan where
+# branch protection is not available. It runs on pull_request (not
+# pull_request_target), so a fork's PR gets a read-only token and none of this
+# repo's secrets - the workflow only ever reads the list of changed filenames.
+name: scope check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  paths:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every changed path against the allowlist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+
+          # Maintainers change the shared code, so checking them would only cry
+          # wolf. Asked of the repo rather than compared to its owner's name:
+          # once it lives in an organization, the owner is the org, not a person.
+          perm="$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission 2>/dev/null || echo none)"
+          if [ "$perm" = admin ] || [ "$perm" = maintain ]; then
+            echo "$AUTHOR has $perm on this repo - not scope-checked."
+            exit 0
+          fi
+
+          files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
+          echo "Changed files:"
+          echo "$files" | sed 's/^/  /'
+          echo
+
+          bad=""
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              # The shape of the stream list. The real streams.json is gitignored:
+              # links stay on each Pi, so a PR carrying one should not pass.
+              streams.example.json) ;;
+
+              # Shared machinery that happens to live in sites/. A new site is a
+              # NEW file, so neither of these ever needs to change for one.
+              streamplayer/sites/__init__.py|streamplayer/sites/base.py) bad="$bad $f" ;;
+
+              # One file per site, directly in sites/ - no subdirectories.
+              streamplayer/sites/*.py)
+                case "${f#streamplayer/sites/}" in
+                  */*) bad="$bad $f" ;;   # nested, not a plain site module
+                esac
+                ;;
+
+              *) bad="$bad $f" ;;
+            esac
+          done <<< "$files"
+
+          if [ -n "$bad" ]; then
+            {
+              echo "### Out of scope"
+              echo
+              echo "This pull request changes files contributors cannot edit:"
+              echo
+              for f in $bad; do echo "- \`$f\`"; done
+              echo
+              echo "Contributors may change **only**:"
+              echo "- \`streams.example.json\` — the shape of the button file (real links stay off git)"
+              echo "- a new \`streamplayer/sites/<yoursite>.py\` — one file per streaming site"
+              echo
+              echo "\`base.py\` and \`__init__.py\` are shared: \`base.py\` is the template you"
+              echo "subclass, \`__init__.py\` discovers your file on its own. Adding a site"
+              echo "needs neither. See **Contributing** in the README."
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::error::Out of scope: $bad"
+            exit 1
+          fi
+
+          echo "All changed paths are in scope."

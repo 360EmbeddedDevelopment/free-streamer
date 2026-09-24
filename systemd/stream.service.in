@@ -1,0 +1,36 @@
+[Unit]
+# TEMPLATE - not a working unit; see stream-web.service.in. install.sh does not
+# render this one: the control panel supersedes it. The README shows the sed.
+#
+# A *user* service: it needs the desktop session to exist, because Firefox draws
+# as a client of the compositor that owns the TV. Install to
+# ~/.config/systemd/user/stream.service - see README.
+Description=HDMI stream player
+Documentation=file:@REPO@/README.md
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+
+# Edit this line: put the stream page URL you want the Pi to play.
+ExecStart=/usr/bin/python3 @REPO@/stream.py \
+    --retries -1 \
+    --log-file %h/.local/state/stream/stream.log \
+    STREAM_URL_HERE
+
+WorkingDirectory=@REPO@
+
+# The session is found at launch, not named here: which Wayland socket exists
+# (wayland-0, wayland-1, ...) depends on the compositor and the Pi, and a
+# hard-coded one overrides detection and aims the browser at nothing. Only the
+# runtime directory is fixed, and install.sh fills in this user's uid.
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=XAUTHORITY=%h/.Xauthority
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

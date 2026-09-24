@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy to streams.json (install.sh does it for you) and put your own links in. streams.json is gitignored: stream links stay on the Pi, never in the repo. Each button needs \"url\" for one link, or \"urls\" for several - a button with several steps to the next one each time you tap it. \"links\" is separate: those open on your own phone for browsing, not on the TV. See README.",
+  "links": [
+    { "label": "Example site", "url": "https://example.com/", "note": "what is on it" }
+  ],
+  "streams": [
+    {
+      "id": "match-1",
+      "label": "Main match",
+      "url": "https://example.com/match-page",
+      "group": "Football"
+    },
+    {
+      "id": "match-2",
+      "label": "Match with a backup source",
+      "urls": [
+        "https://example.com/match-page",
+        "https://example.org/backup-page"
+      ],
+      "group": "Football",
+      "note": "tap again for the backup"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
-"""Detect the HDMI output and its matching audio device.
+"""Detect the HDMI output and the session that owns it.
 
-The Pi exposes each HDMI port as a DRM connector under /sys/class/drm and as a
-separate ALSA card (vc4hdmi0 / vc4hdmi1). Neither name is stable across boots or
-board revisions, so everything here is discovered at runtime.
+The Pi exposes each HDMI port as a DRM connector under /sys/class/drm. The
+names are not stable across boots or board revisions, so the connected port -
+and the session env a browser needs to reach it - is discovered at runtime.
 """
 
 from __future__ import annotations
@@ -10,15 +10,16 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 
 DRM_PATH = "/sys/class/drm"
 MODE_RE = re.compile(r"^(\d+)x(\d+)")
 
-# How mpv must talk to the display. Whatever already owns the screen wins: DRM
-# master is exclusive, so if X or a Wayland compositor is running, mpv has to
-# render as a client of it rather than taking the display over.
+# Which display stack owns the screen. Firefox needs one of the first two: it
+# draws as a client of a compositor or an X server and cannot take over a bare
+# console, which is what BACKEND_DRM means.
 BACKEND_X11 = "x11"
 BACKEND_WAYLAND = "wayland"
 BACKEND_DRM = "drm"
@@ -30,7 +31,7 @@ class NoDisplayError(RuntimeError):
 
 @dataclass
 class Connector:
-    name: str  # mpv's --drm-connector value, e.g. "HDMI-A-2"
+    name: str  # DRM connector name, e.g. "HDMI-A-2"
     path: str  # /sys/class/drm/card1-HDMI-A-2
     index: int  # the 2 in HDMI-A-2
 
@@ -74,6 +75,11 @@ def find_connected_connector() -> Connector:
     )
 
 
+def connected_connectors() -> list[Connector]:
+    """Every HDMI port with a display on it - for asking which one is the TV."""
+    return [c for c in connectors() if _read(os.path.join(c.path, "status")) == "connected"]
+
+
 def get_connector(name: str | None) -> Connector:
     """Look up a connector by name, or auto-detect when name is None."""
     if name is None:
@@ -109,9 +115,16 @@ def _runtime_dir() -> str:
 
 
 def wayland_socket() -> str | None:
-    """Name of a running Wayland display, or None."""
-    if os.environ.get("WAYLAND_DISPLAY"):
-        return os.environ["WAYLAND_DISPLAY"]
+    """Name of a running Wayland display, or None.
+
+    $WAYLAND_DISPLAY is only believed if its socket actually exists. The name
+    depends on the compositor and the order things started - wayfire and labwc
+    do not agree - so an inherited or hard-coded value can easily point at a
+    socket nobody created, and trusting it would aim the browser at nothing.
+    """
+    named = os.environ.get("WAYLAND_DISPLAY")
+    if named and os.path.exists(os.path.join(_runtime_dir(), named)):
+        return named
     # Over SSH the env is empty, so look for the socket the compositor left.
     for path in sorted(glob.glob(os.path.join(_runtime_dir(), "wayland-[0-9]*"))):
         if not path.endswith(".lock"):
@@ -129,11 +142,11 @@ def x_display() -> str | None:
 
 
 def detect_backend() -> str:
-    """Which display stack mpv should target.
+    """Which display stack is running, if any.
 
-    Wayland and X are checked first because a running compositor holds DRM
-    master exclusively - mpv's drm output only works when nothing else owns the
-    screen (a bare console boot).
+    A compositor holds DRM master exclusively, so finding one means the screen
+    is already owned and a browser can be a client of it. BACKEND_DRM is the
+    bare-console case: nothing owns the screen, and Firefox cannot draw there.
     """
     if wayland_socket():
         return BACKEND_WAYLAND
@@ -143,7 +156,7 @@ def detect_backend() -> str:
 
 
 def session_env(backend: str) -> dict[str, str]:
-    """Env vars a player needs to reach the session, for SSH-launched runs."""
+    """Env vars the browser needs to reach the session, for SSH-launched runs."""
     env: dict[str, str] = {}
     if backend == BACKEND_WAYLAND:
         sock = wayland_socket()
@@ -161,75 +174,94 @@ def session_env(backend: str) -> dict[str, str]:
     return env
 
 
+_WLR_MODE = re.compile(r"^\s+(\d+)x(\d+) px, ([\d.]+) Hz(.*)$")
+_X_OUTPUT = re.compile(r"^(\S+) connected")
+_X_MODE = re.compile(r"^\s+(\d+)x(\d+)i?\s+(.*)$")
+
+
+def _output_modes(name: str, backend: str, env: dict[str, str]) -> list[tuple[int, int, str, bool]]:
+    """(width, height, refresh as the tool prints it, is-current) for one output."""
+    tool = ["wlr-randr"] if backend == BACKEND_WAYLAND else ["xrandr", "--query"]
+    out = subprocess.run(tool, capture_output=True, text=True, env={**os.environ, **env}, timeout=10).stdout
+    modes: list[tuple[int, int, str, bool]] = []
+    mine = False
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            head = _X_OUTPUT.match(line) if backend == BACKEND_X11 else None
+            mine = (head.group(1) if head else line.split()[0]) == name
+            continue
+        if not mine:
+            continue
+        if backend == BACKEND_WAYLAND:
+            m = _WLR_MODE.match(line)
+            if m:
+                modes.append((int(m.group(1)), int(m.group(2)), m.group(3), "current" in m.group(4)))
+        else:
+            m = _X_MODE.match(line)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+                for rate in m.group(3).split():
+                    modes.append((w, h, rate.rstrip("*+"), "*" in rate))
+    return modes
+
+
+def set_mode(conn: Connector, backend: str, mode: str) -> str:
+    """Switch the output to `mode` ("1920x1080") before a stream starts.
+
+    Returns what happened, for the log. Never raises: a screen left at the
+    wrong resolution plays badly, but a screen that fails to switch should not
+    stop the stream. Leaves the screen alone when it is already at that size -
+    every switch blanks the TV for a moment - and picks the best refresh at or
+    below 60Hz, since a bare size can land on a TV's 24Hz film mode.
+    """
+    m = MODE_RE.match(mode or "")
+    if not m:
+        return f"not switching: {mode!r} is not a WIDTHxHEIGHT mode"
+    if backend not in (BACKEND_WAYLAND, BACKEND_X11):
+        return "not switching: no display session to switch"
+    tool = "wlr-randr" if backend == BACKEND_WAYLAND else "xrandr"
+    if not shutil.which(tool):
+        return f"not switching: {tool} is not installed (sudo apt install {tool})"
+
+    width, height = int(m.group(1)), int(m.group(2))
+    name, env = output_name(conn, backend), session_env(backend)
+    try:
+        modes = _output_modes(name, backend, env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"not switching: could not read the modes ({exc})"
+    if any(w == width and h == height and cur for w, h, _, cur in modes):
+        return f"{name} already at {mode}"
+    same = [(float(r), r) for w, h, r, _ in modes if w == width and h == height]
+    if not same:
+        return f"not switching: {name} does not offer {mode}"
+    # 50-60Hz suits broadcast sport. Failing that, the lowest rate above it (a
+    # 120Hz mode still shows every frame), and only then something slower -
+    # 24Hz would judder badly with 60fps football.
+    broadcast = [x for x in same if 49.0 <= x[0] <= 60.5]
+    faster = [x for x in same if x[0] > 60.5]
+    rate = (max(broadcast) if broadcast else min(faster) if faster else max(same))[1]
+
+    cmd = ([tool, "--output", name, "--mode", f"{width}x{height}@{rate}"] if backend == BACKEND_WAYLAND
+           else [tool, "--output", name, "--mode", f"{width}x{height}", "--rate", rate])
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **env}, timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"not switching: {tool} failed ({exc})"
+    if done.returncode != 0:
+        return f"not switching: {tool} said {done.stderr.strip() or done.returncode}"
+    return f"switched {name} to {width}x{height} at {float(rate):.2f}Hz"
+
+
 def output_name(conn: Connector, backend: str) -> str:
     """The connector's name in the given display stack.
 
     X drops the DRM connector-type letter: DRM's HDMI-A-2 is X's HDMI-2.
-    Wayland compositors keep the DRM name as-is.
+    Wayland compositors keep the DRM name as-is. Informational here - Firefox
+    has no output-selection flag; the compositor places its window.
     """
     if backend == BACKEND_X11:
         return conn.name.replace("HDMI-A-", "HDMI-")
     return conn.name
-
-
-def _alsa_hdmi_cards() -> list[str]:
-    """ALSA card names for the vc4 HDMI outputs, in card-number order."""
-    cards = []
-    for path in sorted(glob.glob("/proc/asound/card*/id")):
-        name = _read(path)
-        if name.startswith("vc4hdmi"):
-            cards.append(name)
-    return cards
-
-
-def _pipewire_hdmi_sink() -> str | None:
-    """An mpv audio-device string for the PipeWire/Pulse HDMI sink, if one exists."""
-    try:
-        out = subprocess.run(
-            ["mpv", "--audio-device=help"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    for line in out.splitlines():
-        m = re.search(r"'((?:pipewire|pulse)/[^']*hdmi[^']*)'", line)
-        if m:
-            return m.group(1)
-    return None
-
-
-def hdmi_audio_device(conn: Connector) -> str:
-    """Best-guess mpv --audio-device for audio over this HDMI port.
-
-    Prefers the ALSA card whose number matches the connector index (HDMI-A-1 ->
-    vc4hdmi0), since that addresses the hardware directly. The mapping is a
-    convention rather than a guarantee, so verify with speaker-test once:
-
-        speaker-test -D hdmi:CARD=vc4hdmi1,DEV=0 -c 2 -t wav
-    """
-    cards = _alsa_hdmi_cards()
-    wanted = f"vc4hdmi{conn.index - 1}"
-    if wanted in cards:
-        return f"alsa/hdmi:CARD={wanted},DEV=0"
-    if cards:
-        return f"alsa/hdmi:CARD={cards[0]},DEV=0"
-    return _pipewire_hdmi_sink() or "auto"
-
-
-def hevc_decoder_device() -> str | None:
-    """Path of the Pi's HEVC hardware decoder, if the kernel exposes one.
-
-    The Pi 5 has an HEVC block (rpi-hevc-dec) but no H.264 one, so this is the
-    only codec that can be offloaded here.
-    """
-    for path in sorted(glob.glob("/dev/video*")):
-        node = os.path.basename(path)
-        name = _read(f"/sys/class/video4linux/{node}/name")
-        if "hevc" in name.lower():
-            return path
-    return None
 
 
 def describe() -> str:

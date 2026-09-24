@@ -1,0 +1,14 @@
+# Everything belongs to the repo owner by default. Collaborators contribute by
+# pull request; see "Contributing" in the README for what they may change.
+#
+# CODEOWNERS only *requests* review on its own. It becomes enforcement when the
+# branch is protected with "Require review from Code Owners" - which needs a
+# paid plan on a private repo. The scope-check workflow is what actually fails
+# an out-of-scope pull request here.
+*                               @OWongit
+
+# The two files in sites/ that are shared machinery rather than one site:
+# base.py is the template every site builds on, __init__.py is the dispatch and
+# auto-discovery. New sites are new files, so neither should move.
+/streamplayer/sites/base.py     @OWongit
+/streamplayer/sites/__init__.py @OWongit

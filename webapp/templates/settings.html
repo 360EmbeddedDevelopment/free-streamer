@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en" data-status="idle">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <title>Settings · Streamer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="settings">
+<header class="top">
+  <div class="topline">
+    <h1>Settings</h1>
+    <a class="link" href="{{ url_for('web.index') }}">← Streams</a>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" data-tab="streams" role="tab">Streams</button>
+    <button class="tab" data-tab="advanced" role="tab">Advanced</button>
+  </nav>
+</header>
+
+<main>
+  <p class="flash" id="flash" hidden></p>
+
+  <section class="panel" id="tab-streams">
+    {% if catalog.error %}
+      <div class="banner error">
+        <strong>streams.json could not be read</strong>
+        <span>{{ catalog.error }}</span>
+        <span>Fix the file by hand before editing here — saving is refused while it is broken.</span>
+      </div>
+    {% endif %}
+
+    <details class="editor" id="addBox">
+      <summary class="addsummary">+ Add a stream</summary>
+      <form class="form" id="addForm">
+        <label>Label <input name="label" placeholder="Monday Night Football" autocomplete="off"></label>
+        <label>Links (one per line, tap the button again for the next)
+          <textarea name="urls" required rows="3" placeholder="https://…" autocomplete="off" inputmode="url"></textarea></label>
+        <label>Group <input name="group" placeholder="Football" autocomplete="off" list="groups"></label>
+        <label>Note <input name="note" placeholder="kick-off 15:00" autocomplete="off"></label>
+        <details class="sub">
+          <summary>Per-stream overrides</summary>
+          <div class="subgrid">
+            <label>Site handler
+              <select name="site">
+                <option value="">match from the URL</option>
+                {% for s in sites %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Autoplay
+              <select name="autoplay">
+                <option value="">inherit the default</option>
+                <option value="true">start the video</option>
+                <option value="false">leave it to me</option>
+              </select>
+            </label>
+            <label>Retries <input name="retries" placeholder="inherit" inputmode="numeric"></label>
+            <label>Extra Firefox args <input name="firefox_args" placeholder="inherit" autocomplete="off"></label>
+          </div>
+        </details>
+        <div class="row">
+          <button class="primary" type="submit">Add stream</button>
+        </div>
+      </form>
+    </details>
+
+    <datalist id="groups">
+      {% for group, _streams in catalog.groups() %}{% if group %}<option value="{{ group }}">{% endif %}{% endfor %}
+    </datalist>
+
+    <ul class="list" id="streamList"></ul>
+  </section>
+
+  <section class="panel" id="tab-advanced" hidden>
+    <div id="advancedLocked" hidden>
+      <div class="banner warn">
+        <strong>The Advanced tab is locked</strong>
+        <span>Create <code>{{ config.path }}</code> with a login, then reload this page:</span>
+      </div>
+<pre class="sample">{
+  "auth": { "username": "owen", "password": "choose-something" }
+}</pre>
+      <p class="hint">
+        There is a copy to start from at <code>{{ config.example }}</code>.
+        The password is stored as you type it and travels over plain HTTP on your
+        wifi, so don't reuse one that matters.
+      </p>
+    </div>
+
+    <form class="form login" id="loginForm" hidden>
+      <label>Username <input name="username" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="row"><button class="primary" type="submit">Sign in</button></div>
+    </form>
+
+    <div id="advancedBody" hidden>
+      <div class="row spread">
+        <h2>Playback defaults</h2>
+        <button class="ghost" id="logout">Sign out</button>
+      </div>
+      <p class="hint">Applied to every button that doesn't set its own.</p>
+      <form class="form" id="defaultsForm">
+        <div class="subgrid">
+          <label>Autoplay
+            <select name="autoplay">
+              <option value="true">start the video</option>
+              <option value="false">leave it to me</option>
+            </select>
+          </label>
+          <label>Retries <input name="retries" inputmode="numeric" placeholder="-1"></label>
+          <label>Display backend
+            <select name="backend">
+              {% for b in config.backends %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Kiosk profile <input name="profile" placeholder="{{ config.profile_default }}" autocomplete="off"></label>
+          <label class="wide">Extra Firefox args <input name="firefox_args" placeholder="none" autocomplete="off"></label>
+        </div>
+        <div class="row"><button class="primary" type="submit">Save defaults</button></div>
+      </form>
+
+      <h2>Maintenance</h2>
+      <div class="actions">
+        {% for action in actions if not action.confirm %}
+          <button class="ghost action" data-action="{{ action.name }}">{{ action.title }}</button>
+        {% endfor %}
+        <button class="ghost" id="runDiagnostics">Run diagnostics</button>
+      </div>
+      <pre class="output" id="actionOutput" hidden></pre>
+
+      <div class="row spread">
+        <h2>Links waiting for support</h2>
+        <button class="danger small" id="clearUnknown">Clear</button>
+      </div>
+      <p class="hint">
+        Pasted into the direct-link bar but refused: no class in
+        <code>streamplayer/sites/</code> claims the domain. Kept in
+        <code id="unknownPath"></code>.
+      </p>
+      <ul class="list" id="unknownList"></ul>
+
+      <h2 class="danger-title">Power</h2>
+      <p class="hint">Type the action's name to confirm — these do exactly what they say.</p>
+      <div class="actions">
+        {% for action in actions if action.confirm %}
+          <button class="danger action" data-action="{{ action.name }}" data-confirm="1">{{ action.title }}</button>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  window.PANEL = {
+    sites: {{ sites | tojson }},
+    config: {{ config | tojson }},
+    admin: {{ admin | tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='settings.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+[Unit]
+# TEMPLATE - not a working unit. ./install.sh fills in the checkout path and
+# uid and writes the result to ~/.config/systemd/user/. Change this file and
+# re-run install.sh; edits to the rendered copy are lost on the next install.
+#
+# A *user* service: the streams it launches are Firefox windows on the desktop
+# session that owns the TV, so it has to live inside that session. Install to
+# ~/.config/systemd/user/stream-web.service - see README.
+#
+# Hooked to default.target, NOT graphical-session.target. The Pi OS desktop
+# does not activate graphical-session.target (seen with wayfire) - it sits
+# inactive with the desktop fully up - so a unit wanted by it simply never starts, and one that is PartOf
+# it gets stopped the moment anything does cycle the target. default.target is
+# reached a few seconds into boot (rpi-connect.service rides the same hook).
+# This needs `loginctl enable-linger`, which install.sh sets, so the user
+# manager starts at boot rather than at first login.
+Description=Stream control panel (web UI)
+Documentation=file:@REPO@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @REPO@/serve.py --host 0.0.0.0 --port 5000
+WorkingDirectory=@REPO@
+
+# The session is found at launch, not named here: which Wayland socket exists
+# (wayland-0, wayland-1, ...) depends on the compositor and the Pi, and a
+# hard-coded one overrides detection and aims the browser at nothing. Only the
+# runtime directory is fixed, and install.sh fills in this user's uid.
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=XAUTHORITY=%h/.Xauthority
+Environment=PYTHONUNBUFFERED=1
+
+Restart=always
+RestartSec=3
+
+# KillMode=mixed: SIGTERM goes to serve.py only, so its atexit handler stops the
+# stream cleanly. The stream.py children sit in their own process groups.
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

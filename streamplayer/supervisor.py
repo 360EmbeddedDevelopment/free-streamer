@@ -1,8 +1,9 @@
-"""Keep the player running across stream drops, and leave the console usable on exit.
+"""Keep the browser running across stream drops.
 
-A live feed ends for all sorts of uninteresting reasons - the CDN rotates a token,
-the wifi blips, the source restarts its encoder. In each case the fix is the same:
-re-resolve the URL and start the player again, backing off so a genuinely dead
+A live feed ends for all sorts of uninteresting reasons - the CDN rotates a
+token, the wifi blips, the source restarts its encoder, the page wedges. In each
+case the fix is the same: build the launch again (which re-reads the page, so an
+expired token is refreshed) and start over, backing off so a genuinely dead
 source doesn't turn into a hot loop.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -18,7 +20,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from .players import Launch
+    from .firefox import Launch
 
 log = logging.getLogger("stream")
 
@@ -30,13 +32,53 @@ BACKOFF_MAX = 30.0
 TERM_GRACE = 5.0
 
 
+class _NoiseFilter(threading.Thread):
+    """Forwards a player's output, dropping lines that always mean nothing.
+
+    Browsers log hundreds of harmless GTK, GL and network-probe lines per
+    minute, which is enough to hide a real error scrolling past. Only patterns
+    the player is known to emit for no reason are dropped, so anything
+    unexpected still reaches the terminal.
+    """
+
+    def __init__(self, stream, patterns: tuple[str, ...]):
+        super().__init__(daemon=True)
+        self.stream = stream
+        self.pattern = re.compile("|".join(patterns))
+        self.suppressed = 0
+        self._blank_after_drop = False
+
+    def run(self) -> None:
+        try:
+            for raw in self.stream:
+                line = raw.rstrip("\n")
+                if self.pattern.search(line):
+                    self.suppressed += 1
+                    # The shader dumps put a blank line after each message.
+                    self._blank_after_drop = True
+                    continue
+                if not line.strip() and self._blank_after_drop:
+                    self.suppressed += 1
+                    continue
+                self._blank_after_drop = False
+                sys.stderr.write(line + "\n")
+                sys.stderr.flush()
+        except (OSError, ValueError):
+            pass  # pipe closed as the player exited
+        finally:
+            try:
+                self.stream.close()
+            except (OSError, ValueError):
+                pass
+
+
 class Supervisor:
     """Runs a player process, restarting it until told to stop."""
 
     def __init__(self, build_launch: Callable[[], "Launch"], retries: int = -1):
-        """build_launch is called before every launch so URLs are re-resolved fresh.
+        """build_launch is called before every launch, so nothing is stale.
 
-        It returns anything with `cmd` and `env` attributes (see players.Launch).
+        It returns anything with `cmd` and `env` attributes (see firefox.Launch).
         retries: -1 runs forever, 0 means a single attempt, N allows N restarts.
         """
         self.build_launch = build_launch
@@ -99,7 +141,7 @@ class Supervisor:
         while not self.stopping:
             try:
                 launch = self.build_launch()
-            except Exception as exc:  # resolution failed - may be transient
+            except Exception as exc:  # building the launch failed - may be transient
                 log.error("%s", exc)
                 if not self._may_retry(attempt):
                     return 1
@@ -114,13 +156,37 @@ class Supervisor:
             started = time.monotonic()
 
             env = {**os.environ, **launch.env} if launch.env else None
+            # -v means "show me everything", so the filter only runs without it.
+            noise = getattr(launch, "noise", ()) if not log.isEnabledFor(logging.DEBUG) else ()
+            piped = (
+                {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "errors": "replace"}
+                if noise
+                else {}
+            )
             try:
-                self.child = subprocess.Popen(launch.cmd, env=env)
+                self.child = subprocess.Popen(launch.cmd, env=env, **piped)
             except OSError as exc:
                 log.error("could not start player: %s", exc)
                 return 1
 
+            sieve = None
+            if noise and self.child.stdout is not None:
+                sieve = _NoiseFilter(self.child.stdout, noise)
+                sieve.start()
+
+            # Driving the page - clicking the poster, going fullscreen - runs
+            # alongside the browser rather than blocking the wait() below, and
+            # never takes the stream down on failure.
+            if launch.post_start is not None:
+                threading.Thread(target=launch.post_start, daemon=True).start()
+
             code = self.child.wait()
+            if sieve is not None:
+                sieve.join(timeout=2.0)
+                if sieve.suppressed:
+                    log.info(
+                        "hid %d harmless player log lines (-v shows them)", sieve.suppressed
+                    )
             ran_for = time.monotonic() - started
             self.child = None
             self._cancel_kill_timer()
@@ -129,9 +195,22 @@ class Supervisor:
                 break
 
             if code == 0 and ran_for < 5:
-                # Exited immediately and cleanly: almost always an empty playlist
-                # or a URL the player silently refused. Retrying won't help.
-                log.error("player exited immediately with no error - check the URL")
+                # Exited immediately and cleanly. Retrying won't help, so the
+                # only useful thing left is to say which of the two causes it
+                # was - and one of them is knowable.
+                from .firefox import profile_owner
+
+                owner = profile_owner(getattr(launch, "profile", ""))
+                if owner is not None:
+                    log.error(
+                        "another stream is already using this browser profile "
+                        "(pid %d), so this one exited on the spot. Stop that one "
+                        "first - the control panel's stop button, or: kill %d",
+                        owner,
+                        owner,
+                    )
+                else:
+                    log.error("player exited immediately with no error - check the URL")
                 return 1
 
             log.info("player exited with code %d after %.0fs", code, ran_for)
@@ -171,19 +250,6 @@ class Supervisor:
                 return False
             time.sleep(0.25)
         return not self.stopping
-
-
-def restore_console() -> None:
-    """Undo what a KMS player does to the tty: hidden cursor, leftover frame."""
-    if not sys.stdout.isatty():
-        return
-    # Show cursor, reset attributes.
-    sys.stdout.write("\033[?25h\033[0m")
-    sys.stdout.flush()
-    try:
-        subprocess.run(["stty", "sane"], check=False, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 def setup_logging(verbose: bool = False, log_file: str | None = None) -> None:
