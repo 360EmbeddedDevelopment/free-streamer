@@ -4,6 +4,8 @@ Plays a football stream full-screen on a TV plugged into a Raspberry Pi's HDMI
 port. One method, end to end: a kiosk **Firefox** with uBlock Origin, driven
 over Marionette so the video starts and fullscreens with nobody there to click.
 
+![The control panel: a grid of stream buttons grouped by sport, a row of quick links, and the status bar with a Stop button](images/UI_image.png)
+
 Each supported streaming site is a small class (`streamplayer/sites/`) that says
 what its pages need. Right now those are **liveleagues.me** and **ntv.st**
 — the latter only the part of its site that carries a player. `--list-sites`
